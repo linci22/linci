@@ -1,0 +1,202 @@
+void OptimizationBehaviorWalkOmi::updateFitness()
+{
+    static bool written = false;
+    static double displayCnt = 0;
+    const int PLAY_MODE = worldModel->getPlayMode();
+    double currentTime = worldModel->getTime();
+    auto gameTime = worldModel->getGameTime();
+    auto time = fmod((displayCnt / 50), TASK_TIME);
+
+    if (startTime < 0) {
+        // LOG_STR("NOT START YET!");
+        init();
+        return;
+    }
+
+    if (!started && PLAY_MODE == PM_PLAY_ON) //
+    {
+        started = !started;
+    }
+
+    if (currentTime - startTime < INIT_WAIT) {
+        //cerr << "currentTime: " << currentTime <<  endl;
+        //        LOG_STR("im here!");
+        return;
+    }
+
+    if (!beamChecked) {
+        static bool failedLastBeamCheck = false;
+        if (!checkBeam()) {
+            // Beam failed so reinitialize everything
+            if (failedLastBeamCheck) {
+                // Probably something bad happened if we failed the beam twice in
+                // a row (perhaps the agent can't stand) so give a bad score and
+                // move on
+                totalFitness = 1000;
+                // LOG_STR("failed to beamcheck");
+            }
+            failedLastBeamCheck = true;
+            init();
+            // LOG_STR("checking!");
+            return;
+        } else {
+            failedLastBeamCheck = false;
+            // Set playmode to PlayOn to start run and move ball out of the way
+            // LOG_STR("success to beamcheck");
+            string msg = "(time 0)(playMode PlayOn) (ball (pos -7 0 0) (vel 0 0 0))";
+            setMonMessage(msg);
+        }
+    }
+
+    //return fitness to script
+    if (run == beamPos_arr.size() && totalRun > MAXRUN) {
+        if (!written) {
+            // TODO: 有关统计数据的权重还有待测试
+            // 有关踢球距离的统计,偏移的统计
+
+            ofstream fout;
+            fout.open("FAST_T4_10M.txt",ios_base::out|ios_base::app);
+            auto value1 = utils_math::AVG_and_SD(ball_distance);
+            auto value2 = utils_math::AVG_and_SD(y_bias);
+            auto value3 = utils_math::AVG_and_SD(kick_time);
+            auto ball_distance_avg = get<0>(value1);
+            auto ball_distance_sd = get<1>(value1);
+            auto y_bias_avg= get<0>(value2);
+            auto y_bias_sd= get<1>(value2);
+            auto kick_time_avg= get<0>(value3);
+            auto kick_time_sd= get<1>(value3);
+            fout << " ball_distance_avg: " << ball_distance_avg << " ball_distance_sd: "<<  ball_distance_sd <<endl;
+            fout << " y_bias_avg: " << y_bias_avg << " y_bias_sd: " << y_bias_sd <<endl;
+            fout << " kick_time_avg " << kick_time_avg << " kick_time_sd " << kick_time_sd <<endl;
+            fout << " fail_count:"<< fail_count <<" touch_count:"<< touch_count <<" fitness: "<< (totalFitness>=0?min(totalFitness / (totalRun - 1), 999.9):1000) <<endl;
+            fout << endl;
+            if (totalFitness >= 0) {
+                cout << min(totalFitness / (totalRun - 1), 999.9);
+            }
+            else
+                cout << 1000;
+            written = true;
+            fout.close();
+            string msg = "(killsim)";
+            setMonMessage(msg);
+            // LOG_STR("write result to stdout!\n");
+            // exit(0);
+        }
+        //// TODO: ADD CODES HERE TO CONTINUE RUNNING
+        return;
+    }
+
+    if (!fallFlag) {
+        if (worldModel->isFallen()) {
+            auto gameTime = worldModel->getGameTime();
+            auto time = fmod(gameTime, TASK_TIME);
+            if (!kicked && time >= BEAM_INIT_TIME) {
+                // 步态较差情况下倒下一次几乎是必然，应在步态更优后改为更严格的目标
+                // 踢之前倒下三次视作病态情况
+                fall_before_kick++;
+                totalFitness += 20;
+                // LOG(totalFitness);
+                if (fall_before_kick >= 3)
+                {
+                    // LOG_STR("FALL 4 TIMES BEFORE KICK");
+                    cout << 1000;
+                    // exit(0);
+                }
+                // LOG_STR("FALL BEFORE KICK");
+            }
+            fallFlag = true;
+        }
+    }
+
+    if (time == BEAM_INIT_TIME + KICK_TIME || time == BEAM_INIT_TIME + KICK_TIME + 0.01) {
+        int state = evaluate();
+        if (state==1) {
+            fail_count++;
+        } else if (state==2) {
+            touch_count++;
+        }
+    }
+
+    if (time == 0 && worldModel->getPlayMode() != PM_BEFORE_KICK_OFF) {
+        task_init();
+    }
+
+    displayCnt++;
+}
+bool OptimizationBehaviorWalkOmi::checkBeam()
+{
+    //    LOG_STR("Checking whether beam was successful");
+    VecPosition& meTruth = start_pos;
+    meTruth = worldModel->getMyPositionGroundTruth();
+    meTruth.setZ(0);
+    double beamX, beamY, beamAngle;
+    beam(beamX, beamY, beamAngle);
+    VecPosition meDesired = VecPosition(beamX, beamY, beamAngle);
+    double distance = meTruth.getDistanceTo(meDesired);
+    double angleOffset = abs(worldModel->getMyAngDegGroundTruth() - beamAngle);
+    // You may need to enlarge error tolerance to avoid ERROR: Problem with the beam
+    // if (distance > 1 /* || angleOffset > 3 */) {
+    //     LOG_STR("Problem with the beam!");
+    //     extern int gPort;
+    //     LOG(gPort);
+    //     LOG(meDesired);
+    //     LOG(meTruth);
+    //     LOG(angleOffset);
+    //     LOG(distance);
+    //     return false;
+    // }
+    beamChecked = true;
+    return true;
+}
+void OptimizationBehaviorFixedKick::writeFitnessToOutputFile(double fitness) {
+    static bool written = false;
+    if (!written) {
+        LOG(fitness);
+        LOG(kick);
+        fstream file;
+        file.open(outputFile.c_str(), ios::out|ios::app);
+        file << fitness << endl;
+        file.close();
+        written = true;
+        // string msg = "(killsim)";
+        // setMonMessage(msg);
+    }
+}
+void OptimizationBehaviorWalkOmi::init()
+{
+    //wistral
+    started = false;
+    initialized = false;
+    initBeamed = false;
+    beamChecked = false;
+    startTime = worldModel->getTime();
+
+    //new
+    totalFitness = 0;
+    fitness_fall = 0;
+    run = 1;
+
+    string msg = "(playMode BeforeKickOff)";
+    setMonMessage(msg);
+}
+void OptimizationBehaviorWalkOmi::task_init()
+{
+    //    cout << "fallenTime now:    "<< fallenTime << endl;
+    if (run < beamPos_arr.size()) {
+        string msg = "(agent (unum 2) (team Left) (pos " + beamPos_arr[run] + " 0.5)) (ball (pos -7 0 0) (vel 0 0 0))";
+        if (run % 8 == 0) {
+            msg += "(time 0)";
+        }
+        setMonMessage(msg);
+        run++;
+    } else if (run == beamPos_arr.size()) {
+        //        cerr << "totalRUN = " << totalRun << endl;
+        if (totalRun < MAXRUN) {
+            string msg = "(time 0) (agent (unum 2) (team Left) (pos " + beamPos_arr[0] + " 0.5)) (ball (pos -7 0 0) (vel 0 0 0))";
+            setMonMessage(msg);
+            run = 1;
+        }
+        totalRun++;
+    }
+    reset_flags();
+}
